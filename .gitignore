@@ -78,6 +78,11 @@ web_modules/
 .env.test.local
 .env.production.local
 .env.local
+config.js
+output1.csv
+output2.csv
+output1.csv.progress
+output2.csv.progress
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache

@@ -1,0 +1,38 @@
+{
+  "name": "web-scraper",
+  "version": "1.0.0",
+  "description": "This is a personal project that implements a web scraper using JavaScript and Node.js. The scraper is designed to extract data from specific websites and save it in a CSV file format.",
+  "main": "app.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node app.mjs",
+    "lint": "eslint .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/llegomark/web-scraper.git"
+  },
+  "keywords": [
+    "web scraper",
+    "scraper"
+  ],
+  "author": "Mark Anthony Llego",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.8",
+    "axios-retry": "^4.1.0",
+    "csv-stringify": "^6.4.6",
+    "htmlparser2": "^9.1.0",
+    "winston": "^3.13.0"
+  },
+  "bugs": {
+    "url": "https://github.com/llegomark/web-scraper/issues"
+  },
+  "homepage": "https://github.com/llegomark/web-scraper#readme",
+  "devDependencies": {
+    "@eslint/js": "^9.2.0",
+    "eslint": "^9.2.0",
+    "globals": "^15.2.0"
+  }
+}
