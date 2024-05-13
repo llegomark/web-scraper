@@ -1,5 +1,5 @@
 import process from 'process';
-import { Parser } from 'htmlparser2';
+import { Parser as HtmlParser } from 'htmlparser2';
 import axios from 'axios';
 import axiosRetry from 'axios-retry';
 import https from 'https';
@@ -63,20 +63,19 @@ class WebScraper {
             logger.info(`Retrieving total pages for URL: ${this.url}`);
             const response = await axios.get(this.url, { httpsAgent: this.httpsAgent, headers: this.headers });
             const html = response.data;
-            let lastPage = 1;
-            const parser = new Parser({
+            this.totalPages = 1;
+            const parser = new HtmlParser({
                 onopentag: (name, attributes) => {
                     if (name === 'a' && attributes.href && attributes.href.includes('page=')) {
-                        const pageNumber = parseInt(attributes.href.match(/page=(\d+)/)[1]);
-                        if (pageNumber > lastPage) {
-                            lastPage = pageNumber;
+                        const pageNumber = parseInt(attributes.href.match(/page=(\d+)/)?.[1]);
+                        if (pageNumber && pageNumber > this.totalPages) {
+                            this.totalPages = pageNumber;
                         }
                     }
                 },
             });
             parser.write(html);
             parser.end();
-            this.totalPages = lastPage;
             logger.info(`Total pages: ${this.totalPages}`);
         } catch (error) {
             logger.error(`Error retrieving total pages: ${error.message}`);
@@ -115,7 +114,7 @@ class WebScraper {
 
     async parsePage(html) {
         return new Promise((resolve, reject) => {
-            const parser = new Parser({
+            const parserConfig = {
                 onopentag: (name, attributes) => {
                     if (name === 'tr' && (!attributes.class || !attributes.class.includes('table-striped'))) {
                         this.currentRow = {};
@@ -138,13 +137,13 @@ class WebScraper {
                 },
                 onclosetag: (name) => {
                     if (name === 'td') {
-                        const currentCellName = config.csvHeaders.find(cellName => this.currentRow[cellName] === undefined);
+                        const currentCellName = config.csvHeaders.find(cellName => !(cellName in this.currentRow));
                         if (currentCellName) {
                             this.currentRow[currentCellName] = this.currentCell;
                         }
                         this.currentCell = undefined;
                     }
-                    if (name === 'tr' && this.currentRow[config.csvHeaders[0]] !== undefined) {
+                    if (name === 'tr' && Object.keys(this.currentRow).length > 0) {
                         logger.info(`Scraped data: ${JSON.stringify(this.currentRow)}`);
                         this.csvStringifier.write(this.currentRow);
                         this.currentRow = {};
@@ -156,7 +155,9 @@ class WebScraper {
                 onend: () => {
                     resolve();
                 },
-            });
+            };
+
+            const parser = new HtmlParser(parserConfig);
             parser.write(html);
             parser.end();
         });
@@ -165,10 +166,7 @@ class WebScraper {
     async closeCsvStream() {
         logger.info(`Closing CSV stream for file: ${this.outputFile}`);
         return new Promise((resolve) => {
-            this.csvStringifier.end(() => {
-                this.csvStream.end();
-                resolve();
-            });
+            this.csvStringifier.end(resolve);
         });
     }
 
