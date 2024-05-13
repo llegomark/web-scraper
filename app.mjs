@@ -4,10 +4,11 @@ import axios from 'axios';
 import axiosRetry from 'axios-retry';
 import https from 'https';
 import { stringify } from 'csv-stringify';
-import { createWriteStream, existsSync, readFileSync, writeFileSync } from 'fs';
+import { createWriteStream, existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import winston from 'winston';
 import PQueue from 'p-queue';
 import config from './config.js';
+import sanitizeHtml from 'sanitize-html';
 
 const logger = winston.createLogger({
     level: 'info',
@@ -23,30 +24,84 @@ const logger = winston.createLogger({
     ]
 });
 
-class BaseScraper {
-    constructor(url, outputFile, config) {
-        this.url = url;
+const httpsAgent = new https.Agent({
+    ca: readFileSync('./cacert-2024-03-11.pem')  // Assuming ca-certificates.crt is in the root directory
+});
+
+class CsvHandler {
+    constructor(outputFile, csvHeaders) {
         this.outputFile = outputFile;
-        this.config = config;
+        this.csvHeaders = csvHeaders;
         this.csvStream = null;
         this.csvStringifier = null;
-        this.httpsAgent = new https.Agent({ rejectUnauthorized: false });
+        this.initializeCsvStream();
+    }
+
+    initializeCsvStream() {
+        logger.info(`Initializing CSV stream for file: ${this.outputFile}`);
+        this.csvStream = createWriteStream(this.outputFile, { flags: 'a' });
+        this.csvStringifier = stringify({ header: !existsSync(this.outputFile), columns: this.csvHeaders });
+        this.csvStringifier.pipe(this.csvStream);
+    }
+
+    writeRow(row) {
+        this.csvStringifier.write(row);
+    }
+
+    closeCsvStream() {
+        logger.info(`Closing CSV stream for file: ${this.outputFile}`);
+        return new Promise((resolve) => {
+            this.csvStringifier.end(resolve);
+        });
+    }
+}
+
+class ProgressHandler {
+    constructor(progressFile) {
+        this.progressFile = progressFile;
+    }
+
+    loadProgress() {
+        if (existsSync(this.progressFile)) {
+            const progress = JSON.parse(readFileSync(this.progressFile));
+            logger.info(`Resuming scraping from page ${progress.lastScrapedPage}`);
+            return progress.lastScrapedPage;
+        }
+        return 1;
+    }
+
+    saveProgress(page) {
+        const progress = { lastScrapedPage: page };
+        safeWriteFileSync(this.progressFile, JSON.stringify(progress));
+    }
+}
+
+const safeWriteFileSync = (filePath, data) => {
+    const tempFile = `${filePath}.tmp`;
+    writeFileSync(tempFile, data);
+    renameSync(tempFile, filePath);
+};
+
+class BaseScraper {
+    constructor(url, progressHandler, csvHandler, queue) {
+        this.url = url;
+        this.progressHandler = progressHandler;
+        this.csvHandler = csvHandler;
+        this.queue = queue;
         this.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         };
-        this.progressFile = `${outputFile}.progress`;
-        this.lastScrapedPage = 1;
-        this.queue = new PQueue({ concurrency: config.concurrency });
         this.isPaused = false;
+        this.lastScrapedPage = 1;
+        this.totalPages = 1;
     }
 
     async scrape() {
         try {
             logger.info(`Starting scraping for URL: ${this.url}`);
-            this.initializeCsvStream();
-            this.loadProgress();
+            this.lastScrapedPage = this.progressHandler.loadProgress();
             await this.scrapePages();
-            await this.closeCsvStream();
+            await this.csvHandler.closeCsvStream();
             logger.info(`Finished scraping for URL: ${this.url}`);
         } catch (error) {
             logger.error(`Error during scraping: ${error.message}`);
@@ -54,19 +109,11 @@ class BaseScraper {
         }
     }
 
-    initializeCsvStream() {
-        logger.info(`Initializing CSV stream for file: ${this.outputFile}`);
-        this.csvStream = createWriteStream(this.outputFile, { flags: 'a' });
-        this.csvStringifier = stringify({ header: !existsSync(this.outputFile), columns: config.csvHeaders });
-        this.csvStringifier.pipe(this.csvStream);
-    }
-
     async getTotalPages() {
         try {
             logger.info(`Retrieving total pages for URL: ${this.url}`);
-            const response = await axios.get(this.url, { httpsAgent: this.httpsAgent, headers: this.headers });
+            const response = await axios.get(this.url, { httpsAgent, headers: this.headers });
             const html = response.data;
-            this.totalPages = 1;
             const parser = new HtmlParser({
                 onopentag: (name, attributes) => {
                     if (name === 'a' && attributes.href && attributes.href.includes('page=')) {
@@ -91,51 +138,18 @@ class BaseScraper {
             await this.getTotalPages();
             const pageUrls = Array.from({ length: this.totalPages }, (_, i) => `${this.url}?page=${i + 1}`);
 
-            this.queue.on('active', () => {
-                logger.info(`Task active. Size: ${this.queue.size} | Pending: ${this.queue.pending}`);
-            });
-
-            this.queue.on('completed', () => {
-                logger.info(`Task completed. Size: ${this.queue.size} | Pending: ${this.queue.pending}`);
-            });
-
-            this.queue.on('error', (error) => {
-                logger.error(`Task error: ${error.message}`);
-            });
-
-            this.queue.on('empty', () => {
-                logger.info('Queue is empty');
-            });
-
-            this.queue.on('idle', () => {
-                logger.info('Queue is idle');
-            });
-
-            this.queue.on('add', () => {
-                logger.info(`Task added. Size: ${this.queue.size} | Pending: ${this.queue.pending}`);
-            });
-
-            this.queue.on('next', () => {
-                logger.info(`Task completed. Size: ${this.queue.size} | Pending: ${this.queue.pending}`);
-            });
+            this.queue.on('active', () => { logger.info(`Task active. Size: ${this.queue.size} | Pending: ${this.queue.pending}`); });
+            this.queue.on('completed', () => { logger.info(`Task completed. Size: ${this.queue.size} | Pending: ${this.queue.pending}`); });
+            this.queue.on('error', (error) => { logger.error(`Task error: ${error.message}`); });
+            this.queue.on('empty', () => { logger.info('Queue is empty'); });
+            this.queue.on('idle', () => { logger.info('Queue is idle'); });
+            this.queue.on('add', () => { logger.info(`Task added. Size: ${this.queue.size} | Pending: ${this.queue.pending}`); });
+            this.queue.on('next', () => { logger.info(`Task completed. Size: ${this.queue.size} | Pending: ${this.queue.pending}`); });
 
             for (const pageUrl of pageUrls.slice(this.lastScrapedPage - 1)) {
                 this.queue.add(async () => {
-                    try {
-                        logger.info(`Scraping page ${pageUrl}`);
-                        const response = await axios.get(pageUrl, { httpsAgent: this.httpsAgent, headers: this.headers });
-
-                        if (response.status === 200) {
-                            const html = response.data;
-                            await this.parsePage(html);
-                            this.lastScrapedPage++;
-                            this.saveProgress();
-                        } else {
-                            logger.warn(`Unexpected response status ${response.status} for page ${pageUrl}`);
-                        }
-                    } catch (error) {
-                        logger.error(`Error scraping page ${pageUrl}: ${error.message}`);
-                        throw error;
+                    if (await this.scrapePage(pageUrl)) {
+                        this.progressHandler.saveProgress(this.lastScrapedPage++);
                     }
                 });
             }
@@ -143,6 +157,24 @@ class BaseScraper {
             await this.queue.onIdle();
         } catch (error) {
             logger.error(`Error scraping pages: ${error.message}`);
+            throw error;
+        }
+    }
+
+    async scrapePage(pageUrl) {
+        try {
+            logger.info(`Scraping page ${pageUrl}`);
+            const response = await axios.get(pageUrl, { httpsAgent, headers: this.headers });
+            if (response.status === 200) {
+                const html = response.data;
+                await this.parsePage(html);
+                return true;
+            } else {
+                logger.warn(`Unexpected response status ${response.status} for page ${pageUrl}`);
+                return false;
+            }
+        } catch (error) {
+            logger.error(`Error scraping page ${pageUrl}: ${error.message}`);
             throw error;
         }
     }
@@ -166,8 +198,8 @@ class BaseScraper {
                     }
                 },
                 ontext: (text) => {
-                    if (this.currentCell !== undefined) {
-                        this.currentCell += text.trim();
+                    if (typeof this.currentCell !== 'undefined') {
+                        this.currentCell += sanitizeHtml(text.trim());
                     }
                 },
                 onclosetag: (name) => {
@@ -180,7 +212,7 @@ class BaseScraper {
                     }
                     if (name === 'tr' && Object.keys(this.currentRow).length > 0) {
                         logger.info(`Scraped data: ${JSON.stringify(this.currentRow)}`);
-                        this.csvStringifier.write(this.currentRow);
+                        this.csvHandler.writeRow(this.currentRow);
                         this.currentRow = {};
                     }
                 },
@@ -189,35 +221,13 @@ class BaseScraper {
                 },
                 onend: () => {
                     resolve();
-                },
+                }
             };
 
             const parser = new HtmlParser(parserConfig);
             parser.write(html);
             parser.end();
         });
-    }
-
-    async closeCsvStream() {
-        logger.info(`Closing CSV stream for file: ${this.outputFile}`);
-        return new Promise((resolve) => {
-            this.csvStringifier.end(resolve);
-        });
-    }
-
-    loadProgress() {
-        if (existsSync(this.progressFile)) {
-            const progress = JSON.parse(readFileSync(this.progressFile));
-            this.lastScrapedPage = progress.lastScrapedPage;
-            logger.info(`Resuming scraping from page ${this.lastScrapedPage}`);
-        }
-    }
-
-    saveProgress() {
-        const progress = {
-            lastScrapedPage: this.lastScrapedPage,
-        };
-        writeFileSync(this.progressFile, JSON.stringify(progress));
     }
 
     pause() {
@@ -239,12 +249,15 @@ class BaseScraper {
 
 class WebScraper extends BaseScraper {
     constructor(url, outputFile) {
-        super(url, outputFile, config);
+        const csvHandler = new CsvHandler(outputFile, config.csvHeaders);
+        const progressHandler = new ProgressHandler(`${outputFile}.progress`);
+        const queue = new PQueue({ concurrency: config.concurrency });
+        super(url, progressHandler, csvHandler, queue);
     }
 }
 
-function configureAxiosRetry(axios) {
-    axiosRetry(axios, {
+function configureAxiosRetryInstance(instance) {
+    axiosRetry(instance, {
         retries: 3,
         retryDelay: (retryCount, error) => {
             if (error.response?.status === 429) {
@@ -258,24 +271,22 @@ function configureAxiosRetry(axios) {
                 error.code === 'ECONNABORTED' ||
                 [500, 502, 503, 504].includes(error.response?.status)
             );
-        },
+        }
     });
 }
 
 async function main() {
     try {
-        configureAxiosRetry(axios);
+        configureAxiosRetryInstance(axios);
 
         const scraper1 = new WebScraper(config.urls.url1, 'output1.csv');
         await scraper1.scrape();
 
-        // Pause the scraping process for scraper1
         scraper1.pause();
 
         const scraper2 = new WebScraper(config.urls.url2, 'output2.csv');
         await scraper2.scrape();
 
-        // Resume the scraping process for scraper1 after a delay
         setTimeout(() => {
             scraper1.resume();
         }, 5000);

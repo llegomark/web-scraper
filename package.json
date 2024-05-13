@@ -25,6 +25,7 @@
     "csv-stringify": "^6.4.6",
     "htmlparser2": "^9.1.0",
     "p-queue": "^8.0.1",
+    "sanitize-html": "^2.13.0",
     "winston": "^3.13.0"
   },
   "bugs": {
