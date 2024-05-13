@@ -35,6 +35,8 @@ class WebScraper {
         };
         this.progressFile = `${outputFile}.progress`;
         this.lastScrapedPage = 1;
+        this.queue = new PQueue({ concurrency: config.concurrency });
+        this.isPaused = false;
     }
 
     async scrape() {
@@ -87,10 +89,37 @@ class WebScraper {
         try {
             await this.getTotalPages();
             const pageUrls = Array.from({ length: this.totalPages }, (_, i) => `${this.url}?page=${i + 1}`);
-            const queue = new PQueue({ concurrency: config.concurrency });
+
+            this.queue.on('active', () => {
+                logger.info(`Task active. Size: ${this.queue.size} | Pending: ${this.queue.pending}`);
+            });
+
+            this.queue.on('completed', () => {
+                logger.info(`Task completed. Size: ${this.queue.size} | Pending: ${this.queue.pending}`);
+            });
+
+            this.queue.on('error', (error) => {
+                logger.error(`Task error: ${error.message}`);
+            });
+
+            this.queue.on('empty', () => {
+                logger.info('Queue is empty');
+            });
+
+            this.queue.on('idle', () => {
+                logger.info('Queue is idle');
+            });
+
+            this.queue.on('add', () => {
+                logger.info(`Task added. Size: ${this.queue.size} | Pending: ${this.queue.pending}`);
+            });
+
+            this.queue.on('next', () => {
+                logger.info(`Task completed. Size: ${this.queue.size} | Pending: ${this.queue.pending}`);
+            });
 
             for (const pageUrl of pageUrls.slice(this.lastScrapedPage - 1)) {
-                queue.add(async () => {
+                this.queue.add(async () => {
                     try {
                         logger.info(`Scraping page ${pageUrl}`);
                         const response = await axios.get(pageUrl, { httpsAgent: this.httpsAgent, headers: this.headers });
@@ -110,7 +139,7 @@ class WebScraper {
                 });
             }
 
-            await queue.onIdle();
+            await this.queue.onIdle();
         } catch (error) {
             logger.error(`Error scraping pages: ${error.message}`);
             throw error;
@@ -189,6 +218,22 @@ class WebScraper {
         };
         writeFileSync(this.progressFile, JSON.stringify(progress));
     }
+
+    pause() {
+        if (!this.isPaused) {
+            this.queue.pause();
+            this.isPaused = true;
+            logger.info('Scraping paused');
+        }
+    }
+
+    resume() {
+        if (this.isPaused) {
+            this.queue.start();
+            this.isPaused = false;
+            logger.info('Scraping resumed');
+        }
+    }
 }
 
 function configureAxiosRetry(axios) {
@@ -217,8 +262,16 @@ async function main() {
         const scraper1 = new WebScraper(config.urls.url1, 'output1.csv');
         await scraper1.scrape();
 
+        // Pause the scraping process for scraper1
+        scraper1.pause();
+
         const scraper2 = new WebScraper(config.urls.url2, 'output2.csv');
         await scraper2.scrape();
+
+        // Resume the scraping process for scraper1 after a delay
+        setTimeout(() => {
+            scraper1.resume();
+        }, 5000);
     } catch (error) {
         logger.error(`Unhandled error: ${error.message}`);
         process.exit(1);
