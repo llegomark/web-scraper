@@ -23,10 +23,11 @@ const logger = winston.createLogger({
     ]
 });
 
-class WebScraper {
-    constructor(url, outputFile) {
+class BaseScraper {
+    constructor(url, outputFile, config) {
         this.url = url;
         this.outputFile = outputFile;
+        this.config = config;
         this.csvStream = null;
         this.csvStringifier = null;
         this.httpsAgent = new https.Agent({ rejectUnauthorized: false });
@@ -233,6 +234,12 @@ class WebScraper {
             this.isPaused = false;
             logger.info('Scraping resumed');
         }
+    }
+}
+
+class WebScraper extends BaseScraper {
+    constructor(url, outputFile) {
+        super(url, outputFile, config);
     }
 }
 
