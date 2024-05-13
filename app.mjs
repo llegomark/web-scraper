@@ -6,7 +6,7 @@ import https from 'https';
 import { stringify } from 'csv-stringify';
 import { createWriteStream, existsSync, readFileSync, writeFileSync } from 'fs';
 import winston from 'winston';
-import async from 'async';
+import PQueue from 'p-queue';
 import config from './config.js';
 
 const logger = winston.createLogger({
@@ -87,25 +87,30 @@ class WebScraper {
         try {
             await this.getTotalPages();
             const pageUrls = Array.from({ length: this.totalPages }, (_, i) => `${this.url}?page=${i + 1}`);
+            const queue = new PQueue({ concurrency: config.concurrency });
 
-            await async.eachLimit(pageUrls.slice(this.lastScrapedPage - 1), config.concurrency, async (pageUrl) => {
-                try {
-                    logger.info(`Scraping page ${pageUrl}`);
-                    const response = await axios.get(pageUrl, { httpsAgent: this.httpsAgent, headers: this.headers });
+            for (const pageUrl of pageUrls.slice(this.lastScrapedPage - 1)) {
+                queue.add(async () => {
+                    try {
+                        logger.info(`Scraping page ${pageUrl}`);
+                        const response = await axios.get(pageUrl, { httpsAgent: this.httpsAgent, headers: this.headers });
 
-                    if (response.status === 200) {
-                        const html = response.data;
-                        await this.parsePage(html);
-                        this.lastScrapedPage++;
-                        this.saveProgress();
-                    } else {
-                        logger.warn(`Unexpected response status ${response.status} for page ${pageUrl}`);
+                        if (response.status === 200) {
+                            const html = response.data;
+                            await this.parsePage(html);
+                            this.lastScrapedPage++;
+                            this.saveProgress();
+                        } else {
+                            logger.warn(`Unexpected response status ${response.status} for page ${pageUrl}`);
+                        }
+                    } catch (error) {
+                        logger.error(`Error scraping page ${pageUrl}: ${error.message}`);
+                        throw error;
                     }
-                } catch (error) {
-                    logger.error(`Error scraping page ${pageUrl}: ${error.message}`);
-                    throw error;
-                }
-            });
+                });
+            }
+
+            await queue.onIdle();
         } catch (error) {
             logger.error(`Error scraping pages: ${error.message}`);
             throw error;
