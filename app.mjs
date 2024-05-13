@@ -25,7 +25,7 @@ const logger = winston.createLogger({
 });
 
 const httpsAgent = new https.Agent({
-    ca: readFileSync('./cacert-2024-03-11.pem')  // Assuming ca-certificates.crt is in the root directory
+    ca: readFileSync('./cacert-2024-03-11.pem')
 });
 
 class CsvHandler {
