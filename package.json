@@ -20,7 +20,7 @@
   "author": "Mark Anthony Llego",
   "license": "MIT",
   "dependencies": {
-    "axios": "^1.6.8",
+    "axios": "^1.8.2",
     "axios-retry": "^4.1.0",
     "csv-stringify": "^6.4.6",
     "htmlparser2": "^9.1.0",
